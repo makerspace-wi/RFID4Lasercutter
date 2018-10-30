@@ -1,5 +1,3 @@
--ID:\44_workspace\00_github\RFID4Lasercutter\include
--ID:\44_workspace\00_github\RFID4Lasercutter\src
 -IC:\Users\Michael\.platformio\packages\framework-arduinoavr\cores\arduino
 -IC:\Users\Michael\.platformio\packages\framework-arduinoavr\variants\eightanaloginputs
 -ID:\44_workspace\00_github\RFID4Lasercutter\lib\LCDLED_BreakOUT
@@ -36,7 +34,9 @@
 -IC:\Users\Michael\.platformio\packages\toolchain-atmelavr\lib\gcc\avr\4.9.2\include
 -IC:\Users\Michael\.platformio\packages\toolchain-atmelavr\lib\gcc\avr\4.9.2\include-fixed
 -IC:\Users\Michael\.platformio\packages\tool-unity
--DPLATFORMIO=30601
+-ID:\44_workspace\00_github\RFID4Lasercutter\include
+-ID:\44_workspace\00_github\RFID4Lasercutter\src
+-DPLATFORMIO=30602
 -DARDUINO_AVR_PRO
 -DF_CPU=16000000L
 -DARDUINO_ARCH_AVR
