@@ -42,7 +42,7 @@
   'ok'      - Handshake return
 
   last change: 23.09.2018 by Michael Muehl
-  changed: communication lasercutter with RFID started
+  changed: communication lasercutter with RFID started 
 */
 #define Version "6.1"
 
