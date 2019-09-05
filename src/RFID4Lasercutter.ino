@@ -42,9 +42,9 @@
   'ok'      - Handshake return
 
   last change: 23.09.2018 by Michael Muehl
-  changed: communication lasercutter with RFID started 
+  changed: communication lasercutter with RFID started
 */
-#define Version "6.1"
+#define Version "6.1" // (Test =6.x ==> 6.2)
 
 #include <TaskScheduler.h>
 #include <Wire.h>
