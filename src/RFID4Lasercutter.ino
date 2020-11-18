@@ -49,7 +49,7 @@
   'er0;Vorlauf? DS18B20' - no sensor avilable
   'er1;Rueckl.? DS18B20' - no sensor avilable
 
-  last change: 11.11.2020 by Michael Muehl
+  last change: 18.11.2020 by Michael Muehl
   changed: switching lasercutter on and off with RFID detection
            (new version of controlling laser)
 */
@@ -300,8 +300,8 @@ void retryPOR() {
   }
 }
 
-void checkRFID() {   // 500ms Tick
-  tCL.disable();      // soft serial enable
+void checkRFID() {      // 500ms Tick
+  tCL.disable();        // soft serial enable
   if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
     code = 0;
     firstCLOSE = false;
@@ -461,11 +461,27 @@ void granted()  {
   digitalWrite(SSR_Machine, HIGH);
   mesaDy = 4; // LAS.ENA
   tMD.restartDelayed(TASK_SECOND / 2);
+  if (isCover && isPower)
+  {
+    mesaBg = 1;
+    tB.setCallback(blinkMESA);
+    tB.setInterval(TASK_SECOND / 2);
+    tB.enable();
+  }
+  if (isEmerg)
+  {
+    but_led(2);
+    mesaBg = 1;
+    tB.setCallback(blinkMESA);
+    tB.setInterval(TASK_SECOND / 4);
+    tB.enable();
+  }
 }
 
 // Switch off machine and stop
 void shutdown(void) {
   tU.disable();
+  tB.disable();
   timer = 0;
   but_led(2);
   digitalWrite(SSR_Machine, LOW);
@@ -474,8 +490,8 @@ void shutdown(void) {
   tDF.restartDelayed(TASK_SECOND * 30);
   BadSound();
   flash_led(1);
-  tM.enable();  // added by DieterH on 18.10.2017
   lcd.setCursor(0, 0); lcd.print("System shut down at");
+  tM.enable(); // added by DieterH on 18.10.2017
 }
 
 void blinkMESA()
@@ -533,7 +549,7 @@ void but_led(int var)
     lcd.pinLEDs(StopLEDrt, HIGH);
     lcd.pinLEDs(StopLEDgn, LOW);
     break;
-  case 4: // GREEN LED on
+  case 4: // GREEN & RED LED on (new button only)
     lcd.pinLEDs(StopLEDrt, LOW);
     lcd.pinLEDs(StopLEDgn, LOW);
     break;
@@ -602,7 +618,6 @@ void displayON() {
   displayIsON = true;
   digitalWrite(REL_RS232, HIGH);
   lcd.setBacklight(BACKLIGHTon);
-  tB.disable();
   tM.enable();
   lcd.setCursor(0, 2);
   lcd.print("VL=00.0\337C  RL=00.0\337C");
