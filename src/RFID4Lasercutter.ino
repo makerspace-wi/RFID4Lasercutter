@@ -461,37 +461,46 @@ void granted()  {
   digitalWrite(SSR_Machine, HIGH);
   mesaDy = 4; // LAS.ENA
   tMD.restartDelayed(TASK_SECOND / 2);
-  if (isCover && isPower)
-  {
-    mesaBg = 1;
-    tB.setCallback(blinkMESA);
-    tB.setInterval(TASK_SECOND / 2);
-    tB.enable();
-  }
-  if (isEmerg)
-  {
-    but_led(2);
-    mesaBg = 1;
-    tB.setCallback(blinkMESA);
-    tB.setInterval(TASK_SECOND / 4);
-    tB.enable();
-  }
+  checkMesa();
 }
 
 // Switch off machine and stop
 void shutdown(void) {
   tU.disable();
-  tB.disable();
+  digitalWrite(SSR_Machine, LOW);
   timer = 0;
   but_led(2);
-  digitalWrite(SSR_Machine, LOW);
-  connectLaser.println("LSDIS");
   Serial.println(String(IDENT) + ";off");
   tDF.restartDelayed(TASK_SECOND * 30);
   BadSound();
   flash_led(1);
-  lcd.setCursor(0, 0); lcd.print("System shut down at");
+  connectLaser.println("LSDIS");
+  lcd.setCursor(0, 0);
+  lcd.print("System shut down at");
+  tB.disable();
   tM.enable(); // added by DieterH on 18.10.2017
+}
+
+void checkMesa()
+{
+  if (isPower)
+  {
+    tB.setCallback(blinkMESA);
+    if (isEmerg)
+    {
+      but_led(2);
+      mesaBg = 1;
+      tB.setInterval(TASK_SECOND / 4);
+      tB.enable();
+    }
+
+    if (isCover)
+    {
+      mesaBg = 1;
+      tB.setInterval(TASK_SECOND / 2);
+      tB.enable();
+    }
+  }
 }
 
 void blinkMESA()
@@ -741,6 +750,20 @@ void evalSoftSerialData() {
     lcd.print(inSfStr.substring(4));
   }
 
+  if (inSfStr.startsWith("MSP;") && inSfStr.length() == 5)
+  {
+    if (inSfStr.endsWith("1"))
+    {
+      isPower = true;
+      checkMesa();
+    }
+    else if (inSfStr.endsWith("0"))
+    {
+      isPower = false;
+    }
+    lcd.pinLEDs(LCPOWUPLed, isPower);
+  }
+
   if (inSfStr.startsWith("MSL;") && inSfStr.length() == 5)
   {
     if (inSfStr.endsWith("1"))
@@ -832,19 +855,6 @@ void evalSoftSerialData() {
       if (isPower)
         but_led(6);
     }
-  }
-
-  if (inSfStr.startsWith("MSP;") && inSfStr.length() == 5)
-  {
-    if (inSfStr.endsWith("1"))
-    {
-      isPower = true;
-    }
-    else if (inSfStr.endsWith("0"))
-    {
-      isPower = false;
-    }
-    lcd.pinLEDs(LCPOWUPLed, isPower);
   }
 
   if (inSfStr.startsWith("SDV;") && displayIsON && inSfStr.length() == 8)
