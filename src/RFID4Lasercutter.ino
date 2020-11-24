@@ -13,7 +13,7 @@
   'card;nn...' - uid_2 from reader
 
   Commands from Raspi
-  'time'   - format time33.33.33 33:33:33   
+  'time'   - format time33.33.33 33:33:33
   'onp'    - Machine permanent ON
   'ontxx'  - Machine xxx minutes ON
   'off'    - Machine OFF
@@ -344,7 +344,7 @@ void UnLoCallback() {   // 500ms Tick
         tB.disable();
         tM.enable();
         firstCLOSE = true;
-      }     
+      }
     }
     timer -= 1;
     minutes = timer / 120;
@@ -387,12 +387,12 @@ void MesaDelay()
     connectLaser.println(String(LCIDENT) + ";OK");
     mesaDy = 0;
     break;
-    
+
   case 3:
     connectLaser.println(String(LCIDENT) + ";EM");
     mesaDy = 0;
     break;
-  
+
   case 4:
     connectLaser.println("LSENA");
     mesaDy = 0;
@@ -537,9 +537,9 @@ void blinkMESA()
   }
 }
 
-void but_led(int var) 
+void but_led(int var)
 {
-  switch (var) 
+  switch (var)
   {
   case 0: // LEDs off
     lcd.pinLEDs(StopLEDrt, HIGH);
@@ -630,7 +630,7 @@ void displayON() {
   tM.enable();
   lcd.setCursor(0, 2);
   lcd.print("VL=00.0\337C  RL=00.0\337C");
-  lcd.setCursor(0,3); 
+  lcd.setCursor(0,3);
   lcd.print("Flow=00.0l/m Laser? ");
   dispValues();
   mesaDy = 2; // OK
@@ -666,7 +666,8 @@ void evalSerialData() {
   }
 
   if (inStr.startsWith("TIME")) {
-    lcd.setCursor(0, 1); lcd.print(inStr.substring(4));
+    inStr.concat("                   ");     // add blanks to string
+    lcd.setCursor(0, 1); lcd.print(inStr.substring(4,24));
     tB.setInterval(TASK_SECOND / 2);
     getTime = 255;
   }
