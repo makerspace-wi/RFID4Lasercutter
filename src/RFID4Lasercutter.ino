@@ -1,12 +1,12 @@
 /* DESCRIPTION
   ====================
   started on 01JUN2017 - uploaded on 06.06.2017 by Dieter
-  Code for machine and cleaner control over RFID
+  Code for machine control over RFID
   reading IDENT from xBee, retrait sending ...POR until time responds
 
   Commands to Raspi --->
-  'MAxx'  - from xBee (=Ident)
-  'POR'   - machine power on reset (Ident;por)
+  xBeeName - from xBee (=Ident) [max 4 caracter including numbers] {xBeeName + nn}
+  'POR'    - machine power on reset (Ident;por)
 
   'Ident;on'   - machine reporting ON-Status
   'Ident;off'  - machine reporting OFF-Status
@@ -17,12 +17,11 @@
   'onp'    - Machine permanent ON
   'ontxx'  - Machine xxx minutes ON
   'off'    - Machine OFF
-  'noreg'  - uid_2 not registered
+  'noreg'  - RFID-Chip not registed
 
-  'setce'  - set time before ClosE machine
-  'setcn'  - set time for longer CleaN on
-  'setcl'  - set Current Level for switching on and off
-  'dison'  - display on for 60 setCursor
+  'setce'  - [15 min] set time before ClosE machine
+  'setrt'  - [1] set RepeaT messages
+  'dison'  - display on for 60 sec
   'r3t...' - display text in row 3 "r3tabcde12345", max 20
   'r4t...' - display text in row 4 "r4tabcde12345", max 20
 
@@ -42,7 +41,8 @@
   'sdr;00.0'  - Send Display Temperatur Rücklauf °C
   'sdf;00.0'  - Send Display Flowmeter value l/min
   'msl;x'     - message Laser enabled 1 = active (displayed as las.ena / las.dis)
-  'mse;x'     - message Emergency stop 1 = active
+  'mse;x'     - message Temperatursensor error 1 = active
+  'mss;x'     - message Emergency stop 1 = active
   'msc;x'     - message Cover positon 1 = open
   'msp;x'     - message power on 1 = switch on and voltage ok
 
@@ -53,7 +53,9 @@
   changed: switching lasercutter on and off with RFID detection
            (new version of controlling laser)
 */
-#define Version "7.0.1" // (Test =7.0.x ==> 7.0.2)
+#define Version "7.1.0" // (Test =7.1.x ==> 7.1.1)
+#define xBeeName "MA"   // Name and number for xBee
+#define checkFA      2  // event check for every (1 second / FActor)
 
 #include <Arduino.h>
 #include <TaskScheduler.h>
@@ -72,10 +74,10 @@
 
 // Machine Control (ext)
 #define currMotor   A0  // [Input] Motor current (Machine) [no used]
-#define SSR_Machine A2  // SSR Machine on / off  (Laser)
+#define OUT_Machine A2  // OUT Machine on / off  (Machine)
 #define REL_RS232   A3  // Relais RS232 connected on / off
 
-#define BUSError     8  // Bus error
+#define xBuError     8  // Bus error
 
 // Softserial Lasercutter
 #define RxD 2           // receive data
@@ -96,16 +98,16 @@ byte I2CTransmissionResult = 0;
 #define StopLEDrt    4  // StopLEDrt (LED + Stop-Taster)
 #define StopLEDgn    5  // StopLEDgn (LED - Stop-Taster)
 // switch to HIGH Value (def .h)
-// BUTTON_P1  2         // POWERBUTTON
-// BUTTON_P2  1         // StopSwitch
+// BUTTON_P1         6  // POWERBUTTON
+// BUTTON_P2         7  // StopSwitch
 // BACKLIGHT for LCD-Display
 #define BACKLIGHToff 0x0
 #define BACKLIGHTon  0x1
 
 // DEFINES
-#define porTime         5 // wait seconds for sending Ident + POR
-#define CLOSE2END      15 // MINUTES before activation is off
-#define CLEANON         4 // TASK_SECOND vac on for a time
+#define porTime        5 // [  5] wait seconds for sending Ident + POR
+#define disLightOn     30 // [.30] display light on for seconds
+#define CLOSE2END      15 // [ 15] MINUTES blinking before activation is switched off
 
 // CREATE OBJECTS
 Scheduler runner;
@@ -118,11 +120,13 @@ SoftwareSerial connectLaser(RxD, TxD);
 void checkXbee();        // Task connect to xBee Server
 void BlinkCallback();    // Task to let LED blink - added by D. Haude 08.03.2017
 void UnLoCallback();     // Task to Unlock machine
+void repeatMES();        // Task to repeat messages
 void BuzzerOn();         // added by DieterH on 22.10.2017
 void FlashCallback();    // Task to let LED blink - added by D. Haude 08.03.2017
 void DispOFF();          // Task to switch display off after time
 void MesaDelay();        // Task to send message to controller delayed
 
+// Functions define for C++
 void OnTimed(long);
 void flash_led(int);
 
@@ -130,17 +134,18 @@ void connectLaserEvent(); // Softserial Lasercutter
 
 // TASKS
 Task tM(TASK_SECOND / 2, TASK_FOREVER, &checkXbee);	    // 500ms main task
-Task tU(TASK_SECOND / 2, TASK_FOREVER, &UnLoCallback);  // 500ms
+Task tU(TASK_SECOND / checkFA, TASK_FOREVER, &UnLoCallback);  // 1000ms / checkFA ctor
 Task tB(TASK_SECOND * 5, TASK_FOREVER, &BlinkCallback); // 5000ms added M. Muehl
 
 Task tBU(TASK_SECOND / 10, 6, &BuzzerOn);               // 100ms 6x =600ms added by DieterH on 22.10.2017
 Task tBD(1, TASK_ONCE, &FlashCallback);                 // Flash Delay
 Task tDF(1, TASK_ONCE, &DispOFF);                       // display off
-Task tMD(1, TASK_ONCE, &MesaDelay);                     // send message delayed
 
 // Communication with Lasercutter
-Task tCL(TASK_SECOND / 50 + 3, TASK_FOREVER, &connectLaserEvent); // 23ms
 Task tV(TASK_SECOND + 4, TASK_FOREVER, &dispVALUES);         // 500ms (1004ms)
+
+Task tCL(TASK_SECOND / 50 + 3, TASK_FOREVER, &connectLaserEvent); // 23ms
+Task tMD(1, TASK_ONCE, &MesaDelay);                          // send message delayed
 
 // VARIABLES
 unsigned long val;
@@ -148,10 +153,11 @@ unsigned int timer = 0;
 bool onTime = false;
 int minutes = 0;
 bool toggle = false;
-bool flashB;
 unsigned long code;
 byte atqa[2];
 byte atqaLen = sizeof(atqa);
+
+bool flashB;
 byte mesaDy = 0;  // message number delayed
 byte mesaBg = 0;  // message number blinking
 
@@ -160,15 +166,12 @@ bool powMode = LOW;         // Lasercutter switched off / on
 // Variables can be set externaly: ---
 // --- on timed, time before new activation
 unsigned int CLOSE = CLOSE2END; // RAM cell for before activation is off
-bool firstCLOSE = false;
-// --- for cleaning
-unsigned int CLEAN = CLEANON; // RAM cell for Dust vaccu cleaner on
-unsigned int CURLEV = 0;      // RAM cell for before activation is off
-
+bool firstCLOSE = false;        // only display message once
 // Serial with xBee
 String inStr = "";      // a string to hold incoming data
 String IDENT = "";      // Machine identifier for remote access control
-byte plplpl = 0;        // send +++ control AT sequenz
+String SFMes = "";      // String send for repeatMES
+byte co_ok = 0;         // send +++ control AT sequenz OK
 byte getTime = porTime;
 
 // Lasercutter ---------
@@ -189,7 +192,8 @@ bool isCover = false;        // - message Cover positon 1 = open
 bool isPower = false;        // - message power on 1 = switch on and voltage ok
 
 // ======>  SET UP AREA <=====
-void setup() {
+void setup()
+{
   //init Serial port
   Serial.begin(57600);  // Serial
   inStr.reserve(40);    // reserve for instr serial input
@@ -200,19 +204,21 @@ void setup() {
 
   // initialize:
   Wire.begin();         // I2C
-  lcd.begin(20,4);      // initialize the LCD
+
   SPI.begin();          // SPI
+
   mfrc522.PCD_Init();   // Init MFRC522
-  mfrc522.PCD_SetAntennaGain(mfrc522.RxGain_max);
+  mfrc522.PCD_SetAntennaGain(mfrc522.RxGain_avg);
+//  mfrc522.PCD_SetAntennaGain(mfrc522.RxGain_max);
 
   // IO MODES
-  pinMode(BUSError, OUTPUT);
-  pinMode(SSR_Machine, OUTPUT);
+  pinMode(xBuError, OUTPUT);
+  pinMode(OUT_Machine, OUTPUT);
   pinMode(REL_RS232, OUTPUT);
 
   // Set default values
-  digitalWrite(BUSError, HIGH);	// turn the LED ON (init start)
-  digitalWrite(SSR_Machine, LOW);
+  digitalWrite(xBuError, HIGH); // turn the LED ON (init start)
+  digitalWrite(OUT_Machine, LOW);
   digitalWrite(REL_RS232, HIGH);
 
   runner.init();
@@ -232,12 +238,14 @@ void setup() {
   // I2C _ Ports definition only for test if I2C is avilable
   Wire.beginTransmission(I2CPort);
   I2CTransmissionResult = Wire.endTransmission();
-  if (I2CTransmissionResult == 0) {
+  if (I2CTransmissionResult == 0)
+  {
     I2CFound++;
   }
   // I2C Bus mit slave vorhanden
   if (I2CFound != 0)
   {
+    lcd.begin(20, 4);    // initialize the LCD
     lcd.clear();
     lcd.print("Wait for controller");
     tCL.enable();  // soft serial enable
@@ -250,15 +258,20 @@ void setup() {
     tB.setInterval(TASK_SECOND);
   }
 }
+// Setup End -----------------------------------
 
-// FUNCTIONS (Tasks) ----------------------------
-void connectLaserEvent() {
-  if (connectLaser.available()) {
+// TASK (Functions) ----------------------------
+void connectLaserEvent()
+{
+  if (connectLaser.available())
+  {
     char inChar = (char)connectLaser.read();
-    if (inChar == '\x0d') {
+    if (inChar == '\x0d')
+    {
       evalSoftSerialData();
       inSfStr = "";
-    } else if (inChar != '\x0a') {
+    } else if (inChar != '\x0a')
+    {
       inSfStr += inChar;
     }
   }
@@ -273,17 +286,19 @@ void startRFID() {
   tM.enable();          // xBee check
 }
 
-void checkXbee() {
-  if (IDENT.startsWith("MA") && plplpl == 2) {
-    ++plplpl;
+void checkXbee()
+{
+  if (IDENT.startsWith(xBeeName) && co_ok == 2)
+  {
+    ++co_ok;
     tB.setCallback(retryPOR);
     tB.enable();
-    digitalWrite(BUSError, LOW); // turn the LED off (Programm start)
+    digitalWrite(xBuError, LOW); // turn the LED off (Programm start)
   }
 }
 
 void retryPOR() {
-  tDF.restartDelayed(TASK_SECOND * 30); // restart display light
+  tDF.restartDelayed(TASK_SECOND * disLightOn); // restart display light
   if (getTime < porTime * 5) {
     Serial.println(String(IDENT) + ";POR;V" + String(Version));
     ++getTime;
@@ -300,19 +315,22 @@ void retryPOR() {
   }
 }
 
-void checkRFID() {      // 500ms Tick
+void checkRFID()
+{ // 500ms Tick
   tCL.disable();        // soft serial enable
-  if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+  if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial())
+  {
     code = 0;
     firstCLOSE = false;
     for (byte i = 0; i < mfrc522.uid.size; i++) {
       code = ((code + mfrc522.uid.uidByte[i]) * 10);
     }
-    if (!digitalRead(SSR_Machine))  { // Check if machine is switched on
+    if (!digitalRead(OUT_Machine))
+    { // Check if machine is switched on
       flash_led(4);
       tBD.setCallback(&FlashCallback);
       tBD.restartDelayed(100);
-      tDF.restartDelayed(TASK_SECOND * 30);
+      tDF.restartDelayed(TASK_SECOND * disLightOn);
     }
     Serial.println("card;" + String(code));
     // Display changes
@@ -325,13 +343,18 @@ void checkRFID() {      // 500ms Tick
 
 void UnLoCallback() {   // 500ms Tick
   uint8_t buttons = lcd.readButtons();
-  if (timer > 0) {
-    if (timer / 120 < CLOSE) { // Close to end time reached
+  if (timer > 0)
+  {
+    if (timer / 120 < CLOSE)
+    { // Close to end time reached
       toggle = !toggle;
-      if (toggle)  { // toggle GREEN Button LED
+      if (toggle)
+      { // toggle GREEN Button LED
         but_led(1);
         flash_led(1);
-      } else  {
+      }
+      else
+      {
         but_led(3);
         flash_led(4);
       }
@@ -340,7 +363,7 @@ void UnLoCallback() {   // 500ms Tick
         lcd.setCursor(0, 0);
         lcd.print("Place Tag @ Reader");
         lcd.setCursor(0, 1);
-        lcd.print("to extend Time ");
+        lcd.print("to extend Time      ");
         tB.disable();
         tM.enable();
         firstCLOSE = true;
@@ -348,19 +371,21 @@ void UnLoCallback() {   // 500ms Tick
     }
     timer -= 1;
     minutes = timer / 120;
-    if (timer % 120 == 0) {
+    if (timer % 120 == 0)
+    {
       char tbs[8];
       sprintf(tbs, "% 3d", minutes);
       lcd.setCursor(17, 1); lcd.print(tbs);
     }
   }
-  if ((timer == 0 && onTime) || buttons & BUTTON_P2) {   //  time == 0 and timed or Button
+  if ((timer == 0 && onTime) || buttons & BUTTON_P2)
+  {   //  time == 0 and timed or Button
       onTime = false;
       shutdown();
   }
   if ( (buttons & BUTTON_P1) && !(prevButt & BUTTON_P1)) {
     if (isEmerg && !onTime)
-      digitalWrite(SSR_Machine, !digitalRead(SSR_Machine));
+      digitalWrite(OUT_Machine, !digitalRead(OUT_Machine));
   }
 }
 
@@ -398,7 +423,7 @@ void MesaDelay()
     mesaDy = 0;
     break;
 
-      default:
+  default:
     break;
   }
 }
@@ -406,7 +431,7 @@ void MesaDelay()
 void BlinkCallback()
 {
   // --Blink if BUS Error
-  digitalWrite(BUSError, !digitalRead(BUSError));
+  digitalWrite(xBuError, !digitalRead(xBuError));
 }
 
 void FlashCallback() {
@@ -415,22 +440,39 @@ void FlashCallback() {
 
 void DispOFF() {
   displayIsON = false;
-  digitalWrite(REL_RS232, LOW);
   lcd.setBacklight(BACKLIGHToff);
   lcd.clear();
   but_led(0);
   flash_led(1);
+  digitalWrite(REL_RS232, LOW);
 }
 // END OF TASKS ---------------------------------
 
 // FUNCTIONS ------------------------------------
+int getNum(String strNum) // Check if realy numbers
+{
+  strNum.trim();
+  for (byte i = 0; i < strNum.length(); i++)
+  {
+    if (!isDigit(strNum[i])) 
+    {
+      Serial.println(String(IDENT) + ";Num?;" + strNum);
+      lcd.setCursor(19,0);
+      lcd.print("?");
+      return 0;
+    }
+  }
+  return strNum.toInt();
+}
+
 void noreg() {
-  digitalWrite(SSR_Machine, LOW);
+  digitalWrite(OUT_Machine, LOW);
   lcd.setCursor(0, 1); lcd.print("No access, registed?");
   tM.enable();
   BadSound();
   but_led(0);
   flash_led(1);
+  tDF.restartDelayed(TASK_SECOND * disLightOn);
 }
 
 void OnTimed(long min) {   // Turn on machine for nnn minutes
@@ -451,27 +493,29 @@ void OnPerm(void)  {    // Turn on machine permanently (VIP-Users only)
 }
 
 // Tag registered
-void granted()  {
+void granted()
+{
   tM.disable();
   tDF.disable();
   tU.enable();
   but_led(3);
   flash_led(1);
   GoodSound();
-  digitalWrite(SSR_Machine, HIGH);
+  digitalWrite(OUT_Machine, HIGH);
   mesaDy = 4; // LAS.ENA
   tMD.restartDelayed(TASK_SECOND / 2);
   checkMesa();
 }
 
 // Switch off machine and stop
-void shutdown(void) {
+void shutdown(void)
+{
   tU.disable();
-  digitalWrite(SSR_Machine, LOW);
   timer = 0;
   but_led(2);
+  digitalWrite(OUT_Machine, LOW);
   Serial.println(String(IDENT) + ";off");
-  tDF.restartDelayed(TASK_SECOND * 30);
+  tDF.restartDelayed(TASK_SECOND * disLightOn);
   BadSound();
   flash_led(1);
   connectLaser.println("LSDIS");
@@ -573,8 +617,10 @@ void but_led(int var)
   }
 }
 
-void flash_led(int var) {
-  switch (var) {
+void flash_led(int var)
+{
+  switch (var)
+  {
     case 1:   // LEDs off
       lcd.pinLEDs(FlashLED_A, LOW);
       lcd.pinLEDs(FlashLED_B, LOW);
@@ -594,40 +640,47 @@ void flash_led(int var) {
   }
 }
 
-void BuzzerOff()  {
+void BuzzerOff()
+{
   lcd.pinLEDs(buzzerPin, LOW);
   tBU.setCallback(&BuzzerOn);
 }
 
-void BuzzerOn()  {
+void BuzzerOn()
+{
   lcd.pinLEDs(buzzerPin, HIGH);
   tBU.setCallback(&BuzzerOff);
 }
 
-void BadSound(void) {   // added by DieterH on 22.10.2017
+void BadSound(void)
+{   // added by DieterH on 22.10.2017
   tBU.setInterval(100);
   tBU.setIterations(6); // I think it must be Beeps * 2?
   tBU.setCallback(&BuzzerOn);
   tBU.enable();
 }
 
-void GoodSound(void) {
+void GoodSound(void)
+{
   lcd.pinLEDs(buzzerPin, HIGH);
   tBD.setCallback(&BuzzerOff);  // changed by DieterH on 18.10.2017
   tBD.restartDelayed(200);      // changed by DieterH on 18.10.2017
 }
 
 //  RFID ------------------------------
-void dispRFID(void) {
+void dispRFID(void)
+{
   lcd.print("Sys  V" + String(Version).substring(0,3) + " starts at:");
   lcd.setCursor(0, 1); lcd.print("Wait Sync xBee:");
 }
 
-void displayON() {
+void displayON()
+{
   displayIsON = true;
-  digitalWrite(REL_RS232, HIGH);
   lcd.setBacklight(BACKLIGHTon);
+  tB.disable();
   tM.enable();
+  digitalWrite(REL_RS232, HIGH);
   lcd.setCursor(0, 2);
   lcd.print("VL=00.0\337C  RL=00.0\337C");
   lcd.setCursor(0,3);
@@ -637,92 +690,25 @@ void displayON() {
   tMD.restartDelayed(TASK_SECOND / 5);
 }
 
-void dispValues(void) {
-  if (displayIsON) {
+void dispValues(void)
+{
+  if (displayIsON)
+  {
     lcd.setCursor(3,2); lcd.print(txtempV);
     lcd.setCursor(14,2); lcd.print(txtempR);
-    lcd.setCursor(5,3); lcd.print(txtflow);
-    lcd.setCursor(13, 3); lcd.print(txLaser);
+    if (!isEmerg)
+    {
+      lcd.setCursor(5,3); lcd.print(txtflow);
+      lcd.setCursor(13, 3); lcd.print(txLaser);
+    }
   }
 }
 // End Funktions --------------------------------
 
-// Funktions Serial Input (Event) ---------------
-void evalSerialData() {
-  inStr.toUpperCase();
-
-  if (inStr.startsWith("OK")) {
-    if (plplpl == 0) {
-      ++plplpl;
-      Serial.println("ATNI");
-    } else {
-      ++plplpl;
-    }
-  }
-
-  if (inStr.startsWith("MA") && inStr.length() == 4) {
-    Serial.println("ATCN");
-    IDENT = inStr;
-  }
-
-  if (inStr.startsWith("TIME")) {
-    inStr.concat("                   ");     // add blanks to string
-    lcd.setCursor(0, 1); lcd.print(inStr.substring(4,24));
-    tB.setInterval(TASK_SECOND / 2);
-    getTime = 255;
-  }
-
-  if (inStr.startsWith("ONT") && inStr.length() >=4) {
-    val = inStr.substring(3).toInt();
-    OnTimed(val);
-  }
-
-  if (inStr.startsWith("ONP") && inStr.length() ==3) {
-    OnPerm();
-  }
-
-  if (inStr.startsWith("OFF") && inStr.length() ==3) {
-    shutdown(); // Turn OFF Machine
-  }
-
-  if (inStr.startsWith("NOREG")) {
-    noreg();  // changed by D. Haude on 18.10.2017
-  }
-
-  if (inStr.startsWith("SETCE")) { // set time before ClosE machine
-    CLOSE = inStr.substring(5).toInt();
-  }
-
-  if (inStr.startsWith("SETCN")) { // set time for longer CleaN on
-    CLEAN = inStr.substring(5).toInt();
-  }
-
-
-  if (inStr.startsWith("SETCL")) { // set Current Level for switching on and off
-    CURLEV = inStr.substring(5).toInt();
-  }
-
-  if (inStr.startsWith("DISON") && !digitalRead(SSR_Machine)) { // Switch display on for 60 sec
-    displayON();
-    tDF.restartDelayed(TASK_SECOND * 60);
-  }
-
-  if (inStr.substring(0, 3) == "R3T" && inStr.length() >3) {  // print to LCD row 3
-    inStr.concat("                   ");     // add blanks to string
-    lcd.setCursor(0,2);
-    lcd.print(inStr.substring(3,23)); // cut string lenght to 20 char
-  }
-
-  if (inStr.substring(0, 3) == "R4T" && inStr.length() >3) {  // print to LCD row 4
-    inStr.concat("                   ");     // add blanks to string
-    lcd.setCursor(0,3);
-    lcd.print(inStr.substring(3,23));   // cut string lenght to 20 char  changed by MM 10.01.2018
-  }
-}
-
-void evalSoftSerialData() {
+// Funktions Softserial Input (Event) -----------
+void evalSoftSerialData()
+{
   inSfStr.toUpperCase();
-
   if (inSfStr.startsWith("LACU;") && inSfStr.length() == 8)
   {
     if (inSfStr.endsWith("POR"))
@@ -731,27 +717,23 @@ void evalSoftSerialData() {
       tMD.restartDelayed(TASK_SECOND);
       startRFID();
     }
-
-    if (inSfStr.endsWith("ERR"))
+    else if (inSfStr.endsWith("ERR"))
     {
       mesaDy = 3; // EM
       tMD.restartDelayed(TASK_SECOND);
     }
   }
-
-  if (inSfStr.startsWith("ER0;") && inSfStr.length() == 24)
+  else if (inSfStr.startsWith("ER0;") && inSfStr.length() == 24)
   {
     lcd.setCursor(0,2);
     lcd.print(inSfStr.substring(4));
   }
-
-  if (inSfStr.startsWith("ER1;") && inSfStr.length() == 24)
+  else if (inSfStr.startsWith("ER1;") && inSfStr.length() == 24)
   {
     lcd.setCursor(0, 3);
     lcd.print(inSfStr.substring(4));
   }
-
-  if (inSfStr.startsWith("MSP;") && inSfStr.length() == 5)
+  else if (inSfStr.startsWith("MSP;") && inSfStr.length() == 5)
   {
     if (inSfStr.endsWith("1"))
     {
@@ -764,8 +746,7 @@ void evalSoftSerialData() {
     }
     lcd.pinLEDs(LCPOWUPLed, isPower);
   }
-
-  if (inSfStr.startsWith("MSL;") && inSfStr.length() == 5)
+  else if (inSfStr.startsWith("MSL;") && inSfStr.length() == 5)
   {
     if (inSfStr.endsWith("1"))
     {
@@ -778,21 +759,26 @@ void evalSoftSerialData() {
     {
       isLaser = false;
       txLaser = "LAS.DIS";
-      lcd.setCursor(13, 3);
-      lcd.print(txLaser);
+      if (!isEmerg)
+      {
+        lcd.setCursor(13, 3);
+        lcd.print(txLaser);
+      }
     }
   }
-
-  if (inSfStr.startsWith("MSS;") && inSfStr.length() == 5)
+  else if (inSfStr.startsWith("MSS;") && inSfStr.length() == 5)
   {
     if (inSfStr.endsWith("1"))
     {
       isEmerg = true;
+      isLaser = false;
       but_led(2);
       mesaBg = 1;
       tB.setCallback(blinkMESA);
       tB.setInterval(TASK_SECOND / 4);
       tB.enable();
+      lcd.setCursor(0,3);
+      lcd.print("Emergency stop!!!   ");
     }
     else if (inSfStr.endsWith("0"))
     {
@@ -807,10 +793,12 @@ void evalSoftSerialData() {
       {
         but_led(0);
       }
+      lcd.setCursor(0,3);
+      lcd.print("Flow=00.0l/m Laser? ");
+
     }
   }
-
-  if (inSfStr.startsWith("MSE;") && inSfStr.length() == 5)
+  else if (inSfStr.startsWith("MSE;") && inSfStr.length() == 5)
   {
     if (inSfStr.endsWith("1"))
     {
@@ -835,8 +823,7 @@ void evalSoftSerialData() {
       }
     }
   }
-
-  if (inSfStr.startsWith("MSC;") && inSfStr.length() == 5)
+  else if (inSfStr.startsWith("MSC;") && inSfStr.length() == 5)
   {
     if (inSfStr.endsWith("1"))
     {
@@ -857,21 +844,103 @@ void evalSoftSerialData() {
         but_led(6);
     }
   }
-
-  if (inSfStr.startsWith("SDV;") && displayIsON && inSfStr.length() == 8)
+  else if (inSfStr.startsWith("SDV;") && displayIsON && inSfStr.length() == 8)
   {
     txtempV = inSfStr.substring(4, 8);
   }
-
-  if (inSfStr.startsWith("SDR;") && displayIsON && inSfStr.length() == 8)
+  else if (inSfStr.startsWith("SDR;") && displayIsON && inSfStr.length() == 8)
   {
     txtempR = inSfStr.substring(4, 8);
   }
-
-  if (inSfStr.startsWith("SDF;") && displayIsON && inSfStr.length() == 8)
+  else if (inSfStr.startsWith("SDF;") && displayIsON && inSfStr.length() == 8)
   {
     txtflow = inSfStr.substring(4, 8);
   }
+}
+// End Softserial Funktions ---------------------
+
+// Funktions Serial Input (Event) ---------------
+void evalSerialData()
+{
+  inStr.toUpperCase();
+  if (inStr.startsWith("OK"))
+  {
+    if (co_ok == 0)
+    {
+      Serial.println("ATNI");
+      ++co_ok;
+    }
+    else
+    {
+      ++co_ok;
+    }
+  }
+  else if (co_ok ==1  && inStr.length() == 4)
+  {
+    if (inStr.startsWith(xBeeName))
+    {
+      IDENT = inStr;
+    }
+    else
+    {
+      lcd.setCursor(0, 0); lcd.print(inStr);
+    }
+    Serial.println("ATCN");
+  }
+  else if (inStr.startsWith("TIME"))
+  {
+    inStr.concat("                   ");     // add blanks to string
+    lcd.setCursor(0, 1); lcd.print(inStr.substring(4,24));
+    tB.setInterval(TASK_SECOND / 2);
+    getTime = 255;
+  }
+  else if (inStr.startsWith("NOREG") && inStr.length() ==5)
+  {
+    noreg();  // changed by D. Haude on 18.10.2017
+  }
+  else if (inStr.startsWith("ONT") && inStr.length() >= 4 && inStr.length() < 7) 
+  {
+    val = getNum(inStr.substring(3));
+    if (val > 5) OnTimed(val);
+  }
+  else if (inStr.startsWith("ONP") && inStr.length() ==3)
+  {
+    OnPerm();
+  }
+  else if (inStr.startsWith("OFF") && inStr.length() ==3)
+  {
+    shutdown(); // Turn OFF Machine, only in case of emergency!
+  }
+  else if (inStr.startsWith("SETCE") && inStr.length() >= 5 && inStr.length() < 8)
+  { // set time before ClosE machine
+    val = getNum(inStr.substring(5));
+    if (val >= CLOSE2END) CLOSE = val;
+  }
+  else if (inStr.startsWith("DISON") && !digitalRead(OUT_Machine))
+  { // Switch display on for disLightOn secs
+    displayON();
+    tDF.restartDelayed(TASK_SECOND * disLightOn);
+  }
+  else if (inStr.substring(0, 3) == "R3T" && inStr.length() >3)
+  {  // print to LCD row 3
+    inStr.concat("                    ");     // add blanks to string
+    lcd.setCursor(0,2);
+    lcd.print(inStr.substring(3,23)); // cut string lenght to 20 char
+  }
+  else if (inStr.substring(0, 3) == "R4T" && inStr.length() >3)
+  {  // print to LCD row 4
+    inStr.concat("                    ");     // add blanks to string
+    lcd.setCursor(0,3);
+    lcd.print(inStr.substring(3,23));   // cut string lenght to 20 char  changed by MM 10.01.2018
+  }
+  else
+  {
+    Serial.println(String(IDENT) + ";?;" + inStr);
+    inStr.concat("                    ");    // add blanks to string
+    lcd.setCursor(0,2);
+    lcd.print("?:" + inStr.substring(0,18)); // cut string lenght to 20 char
+  }
+  inStr = "";
 }
 
 /* SerialEvent occurs whenever a new data comes in the
@@ -879,12 +948,16 @@ void evalSoftSerialData() {
   time loop() runs, so using delay inside loop can delay
   response.  Multiple bytes of data may be available.
 */
-void serialEvent() {
+void serialEvent()
+{
   char inChar = (char)Serial.read();
-  if (inChar == '\x0d') {
+  if (inChar == '\x0d')
+  {
     evalSerialData();
     inStr = "";
-  } else if (inChar != '\x0a') {
+  }
+  else if (inChar != '\x0a')
+  {
     inStr += inChar;
   }
 }
